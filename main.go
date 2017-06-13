@@ -22,6 +22,12 @@ var (
 
 type pfn func() (pfn, error)
 
+// TODO: implement a system where several state machines receive
+//       incoming tokens and emit results to be give to crawler.done()
+//       This way several checks can be done with one single tokenization pass.
+//       For efficiency, ask each state machine if they are interested in a tag,
+//       if any is, parse the full tag with attributes and deliver it.
+
 type page struct {
 	r    io.Reader
 	url  *nurl.URL
@@ -153,6 +159,9 @@ func (p *page) parse() error {
 	return nil
 }
 
+// httpBodyReader performs a GET request for URL url and
+// reads the full body in memory, returning a reader for
+// the memory buffer.
 func httpBodyReader(url string) (io.Reader, error) {
 	resp, err := http.Get(url)
 	if err != nil {
@@ -174,6 +183,8 @@ func newWorkers(n int, c *crawler) chan<- string {
 	return ch
 }
 
+// worker consumes URLs from channel ch and parses them,
+// calling back the crawler to signal completion with done().
 func worker(ch <-chan string, c *crawler) {
 	for url := range ch {
 		r, err := httpBodyReader(url)
@@ -193,6 +204,7 @@ func worker(ch <-chan string, c *crawler) {
 }
 
 type crawler struct {
+	// TODO: string should be only the unique part of the URL. bool should be nil or struct(result)
 	urls     map[string]bool
 	fn       chan func() error
 	fin      chan struct{}
@@ -224,10 +236,13 @@ func newCrawler(base string, nworkers int) (*crawler, error) {
 	return c, nil
 }
 
+// wait returns when the crawler has no more work to carry out.
 func (c *crawler) wait() {
 	<-c.fin
 }
 
+// sched schedules work to free workers until they are all
+// busy or work has run out.
 func (c *crawler) sched() error {
 	var hasWork bool
 	for url, done := range c.urls {
@@ -246,6 +261,13 @@ func (c *crawler) sched() error {
 	return nil
 }
 
+// done marks a worker as free and ingests the URLs
+// that were extracted from a page.
+//
+// done must be always called after each task a worker
+// performs.
+//
+// done can be called from other go routines
 func (c *crawler) done(urls []string) {
 	c.fn <- func() error {
 		c.nbusy--
@@ -259,6 +281,9 @@ func (c *crawler) done(urls []string) {
 	}
 }
 
+// run handles all synchronized work on the crawler and
+// invokes the scheduler to keep all workers busy until
+// work (pages to visit) has run out.
 func (c *crawler) run() {
 	for fn := range c.fn {
 		if err := fn(); err != nil {
